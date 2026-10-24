@@ -1,0 +1,201 @@
+# Add build zip to GitHub releases.
+# Version: 1.2.0
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+
+name: Release
+
+on:
+  push:
+    tags:
+      # Semver (https://semver.org/) release pattern.
+      - '[0-9]+.[0-9]+.[0-9]+*'
+
+jobs:
+  # Build distribution release.
+  #
+  # Performs the following steps:
+  # - Checks out the repository.
+  # - Sets up PHP with Composer.
+  # - Logs debug information.
+  # - Get Composer Cache Directory.
+  # - Sets up Composer Caching.
+  # - Logs debug information.
+  # - Install Composer dependencies (prefixed with Strauss).
+  # - Generate POT file.
+  # - Setup NodeJS.
+  # - Get NPM cache directory.
+  # - Sets up NPM Caching.
+  # - Install NPM dependencies.
+  # - Get release version.
+  # - Check for Alpha release.
+  # - Check for Beta release.
+  # - Check for Release Candidate release.
+  # - Logs debug information.
+  # - Build changelog from commits.
+  # - Build release:
+  #    - Pre-release.
+  #    - Stable.
+  # - Verify release zip exists.
+  # - Deploy to WooCommerce.
+  # - Rename zip for GitHub release.
+  # - Add package to GitHub releases.
+
+  dist:
+    name: "Build distribution release."
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      release: stable
+    steps:
+
+      - name: "Checks out the repository."
+        uses: "actions/checkout@v7"
+        with:
+          # Full history and tags, so we can find the previous tag.
+          fetch-depth: 0
+
+      - name: "Sets up PHP with Composer."
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer, wp-cli
+        env:
+          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Get Composer Cache Directory."
+        id: composer-cache
+        run: |
+          echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: "Sets up Composer Caching."
+        uses: "actions/cache@v6"
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php-composer-build-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-composer-build-
+
+      - name: "Logs debug information."
+        run: |
+          php --version
+          composer --version
+
+      # Production dependencies only; post-install-cmd runs Strauss to prefix them.
+      - name: "Install Composer dependencies."
+        run: |
+          composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+      # Uses the WP-CLI installed by setup-php, which bundles the i18n command.
+      - name: "Generate POT file."
+        run: |
+          composer makepot
+
+      - name: "Verify prefixed packages."
+        run: |
+          if [ ! -f ./vendor-prefixed/autoload.php ]; then
+            echo "::error::vendor-prefixed/autoload.php missing. Strauss did not run."
+            exit 1
+          fi
+          if [ -d ./vendor/afragen ]; then
+            echo "::error::Unprefixed dependencies found in vendor/."
+            exit 1
+          fi
+
+      - name: "Setup NodeJS."
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: "Get NPM cache directory."
+        id: npm-cache-dir
+        run: |
+          echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
+
+      - name: "Sets up NPM Caching."
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.npm-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-node-npm-build-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-npm-build-
+
+      - name: "Install NPM dependencies."
+        run: npm install
+
+      - name: "Get release version."
+        run: |
+          echo "release_tag=$(node -p -e "require('./package.json').version")" >> $GITHUB_ENV
+
+      - name: "Get release file base name."
+        run: |
+          echo "release_name=$(node -p -e "require('./package.json').name")" >> $GITHUB_ENV
+
+      - name: "Check for Alpha release."
+        if: ${{ contains(env.release_tag, '-alpha') }}
+        run: |
+          echo "release_status=pre-release" >> $GITHUB_ENV
+
+      - name: "Check for Beta release."
+        if: ${{ contains(env.release_tag, '-beta') }}
+        run: |
+          echo "release_status=pre-release" >> $GITHUB_ENV
+
+      - name: "Check for Release Candidate release."
+        if: ${{ contains(env.release_tag, '-rc') }}
+        run: |
+          echo "release_status=pre-release" >> $GITHUB_ENV
+
+      - name: "Logs debug information."
+        run: |
+          node --version
+          npm --version
+          echo ${{ env.release_tag }}
+          echo ${{ env.release_status }}
+
+      # Release notes are the commit subjects since the previous tag, minus version bumps.
+      - name: "Build changelog from commits."
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          range="${prev:+$prev..}$TAG"
+          {
+            echo "## Changelog"
+            echo
+            git log "$range" --no-merges --pretty=format:'- %s' \
+              | grep -viE '^- version bump|^- version [0-9]|^- [0-9]+\.[0-9]+\.[0-9]+' || true
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: "Build release: Pre-release"
+        if: ${{ env.release_status == 'pre-release' }}
+        run: |
+          npm run zip
+
+      - name: "Build release: Stable"
+        if: ${{ env.release_status != 'pre-release' }}
+        run: |
+          npm run zip
+
+      - name: "Verify release zip exists"
+        run: |
+          echo "Checking for release zip…"
+          ls -lh ./deploy || true
+          if [ ! -f "./deploy/${{ env.release_name }}.zip" ]; then
+            echo "::error::Release zip not found at ./deploy/${{ env.release_name }}.zip"
+            exit 1
+          fi
+
+      - name: "Rename zip for GitHub release."
+        run: |
+          cp ./deploy/${{ env.release_name }}.zip ./deploy/${{ env.release_name }}-${{ env.release_tag }}.zip
+
+      - name: "Add package to GitHub releases."
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ./deploy/${{ env.release_name }}-${{ env.release_tag }}.zip
+          body_path: release-notes.md
+          prerelease: ${{ env.release_status == 'pre-release' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

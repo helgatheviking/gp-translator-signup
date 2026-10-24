@@ -1,0 +1,64 @@
+{
+  "name": "helgatheviking/gp-translator-signup",
+  "description": "Lets translators register for GlotPress with the languages they can translate, and lets admins approve them as reviewers.",
+  "type": "wordpress-plugin",
+  "license": "GPL-3.0-or-later",
+  "require": {
+    "php": ">=8.0",
+    "afragen/git-updater-lite": "^3.0"
+  },
+  "require-dev": {
+    "wp-cli/i18n-command": "*",
+    "wp-coding-standards/wpcs": "^3.0",
+    "phpcompatibility/phpcompatibility-wp": "^2.1"
+  },
+  "scripts": {
+    "makepot": [
+      "wp i18n make-pot . languages/gp-translator-signup.pot --slug=gp-translator-signup --domain=gp-translator-signup --exclude=vendor,vendor-prefixed,node_modules,tests,deploy,bin"
+    ],
+    "makepot-audit": [
+      "wp i18n audit . --domain=gp-translator-signup"
+    ],
+    "lint": [
+      "phpcs . -s -p -n"
+    ],
+    "lint:fix": [
+      "phpcbf . "
+    ],
+    "prefix-namespaces": [
+      "sh -c 'test -f bin/strauss.phar || { mkdir -p bin && curl -fL -o bin/strauss.phar https://github.com/BrianHenryIE/strauss/releases/latest/download/strauss.phar; }'",
+      "@php bin/strauss.phar",
+      "@composer dump-autoload"
+    ],
+    "post-install-cmd": [
+      "@prefix-namespaces"
+    ],
+    "post-update-cmd": [
+      "@prefix-namespaces"
+    ]
+  },
+  "extra": {
+    "scripts-description": {
+      "makepot": "Generate a .pot file for translation",
+      "makepot-audit": "Generate a .pot file for translation. Dry run.",
+      "phpcs": "Analyze code against the WordPress coding standards with PHP_CodeSniffer",
+      "phpcb": "Fix coding standards warnings/errors automatically with PHP Code Beautifier",
+      "prefix-namespaces": "Prefix namespaces of dependencies with Strauss (downloads bin/strauss.phar if missing)"
+    },
+    "strauss": {
+      "target_directory": "vendor-prefixed",
+      "namespace_prefix": "HelgaTheViking\\GPTranslatorSignup\\Vendor",
+      "classmap_prefix": "HelgaTheViking_GP_Translator_Signup_Vendor_",
+      "constant_prefix": "HTVGPTS_",
+      "delete_vendor_packages": true
+    }
+  },
+  "config": {
+    "platform": {
+      "php": "8.0"
+    },
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
+  }
+}

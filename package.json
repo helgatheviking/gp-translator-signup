@@ -1,0 +1,26 @@
+{
+  "name": "gp-translator-signup",
+  "version": "0.1.0",
+  "description": "Lets translators register for GlotPress with the languages they can translate, and lets admins approve them as reviewers.",
+  "main": "gp-translator-signup.php",
+  "scripts": {
+    "make-pot": "composer makepot",
+    "zip": "wp-scripts plugin-zip && mkdir -p deploy && mv gp-translator-signup.zip deploy/",
+    "release": "npm run update-version && npm run build",
+    "betarelease": "npm run update-version && npm run build",
+    "update-version": "node bin/update-version.js",
+    "version": "npm run update-version && git add gp-translator-signup.php",
+    "postversion": "git push --follow-tags",
+    "build": "composer install --no-interaction && npm run make-pot && composer install --no-dev --optimize-autoloader --no-interaction && npm run zip && composer install --no-interaction"
+  },
+  "files": [
+    "gp-translator-signup.php",
+    "languages/",
+    "README.md",
+    "vendor/",
+    "vendor-prefixed/"
+  ],
+  "devDependencies": {
+    "@wordpress/scripts": "^37.0.0"
+  }
+}
