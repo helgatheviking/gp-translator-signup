@@ -590,11 +590,13 @@ function remember_page_context( string $template, array $args ): void {
 	if ( ! in_array( $template, array( 'project', 'translations' ), true ) || empty( $args['project'] ) ) {
 		return;
 	}
+	// The project page gets GlotPress's get_defined_vars(), so a $locale left over from its loop over sets: ignore it.
+	$is_set = 'translations' === $template;
 	page_context(
 		array(
 			'project' => $args['project'],
-			'set'     => $args['translation_set'] ?? null,
-			'locale'  => $args['locale'] ?? null,
+			'set'     => $is_set ? ( $args['translation_set'] ?? null ) : null,
+			'locale'  => $is_set ? ( $args['locale'] ?? null ) : null,
 		)
 	);
 }
