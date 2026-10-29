@@ -1,6 +1,6 @@
 {
   "name": "gp-translator-signup",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Lets visitors sign up for GlotPress as translators or reviewers, and lets admins approve reviewers.",
   "main": "gp-translator-signup.php",
   "scripts": {
