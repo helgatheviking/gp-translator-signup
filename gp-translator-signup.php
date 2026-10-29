@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Translator Sign-up for GlotPress
- * Description: Lets translators register for GlotPress with the languages they can translate. Approving a translator makes them a reviewer for those languages on every project; rejecting stops them from suggesting translations.
+ * Description: Lets visitors sign up for GlotPress as translators or reviewers, with the languages they can translate. Translators can suggest translations straight away; reviewers can approve translations in their languages once an admin approves them.
  * Version:     0.1.0
  * Author:      helgatheviking
  * Author URI:  https://www.kathyisawesome.com
@@ -40,11 +40,12 @@ if ( file_exists( __DIR__ . '/vendor-prefixed/autoload.php' ) ) {
 
 use GP;
 use GP_Locales;
+use WP_Error;
 use WP_User;
 use WP_User_Query;
 
 /**
- * User meta: GlotPress locale slugs the translator asked to translate.
+ * User meta: GlotPress locale slugs the translator can translate.
  */
 const LANGUAGES_META = 'gp_translator_languages';
 
@@ -54,9 +55,24 @@ const LANGUAGES_META = 'gp_translator_languages';
 const OTHER_META = 'gp_translator_other_languages';
 
 /**
- * User meta: pending, approved or rejected. Absent for users who did not sign up through the form.
+ * User meta: translator, pending, approved or rejected. Absent for users who did not sign up through the form.
  */
 const STATUS_META = 'gp_translator_status';
+
+/**
+ * User meta: what a reviewer applicant told us about their translation experience.
+ */
+const EXPERIENCE_META = 'gp_translator_experience';
+
+/**
+ * User meta: path of the GlotPress project they signed up from.
+ */
+const APPLIED_FROM_META = 'gp_translator_applied_from';
+
+/**
+ * Form field: "translator" or "reviewer".
+ */
+const ROLE_FIELD = 'gp_translator_role';
 
 /**
  * Hidden field that only bots fill in.
@@ -66,14 +82,27 @@ const HONEYPOT = 'gp_translator_website';
 /**
  * Returns the translator statuses and their labels.
  *
+ * "rejected" means blocked: kept as the stored value so existing users keep their status.
+ *
  * @return array<string, string>
  */
 function statuses(): array {
 	return array(
-		'pending'  => __( 'Pending', 'gp-translator-signup' ),
-		'approved' => __( 'Approved', 'gp-translator-signup' ),
-		'rejected' => __( 'Rejected', 'gp-translator-signup' ),
+		'translator' => __( 'Translator', 'gp-translator-signup' ),
+		'pending'    => __( 'Reviewer (pending)', 'gp-translator-signup' ),
+		'approved'   => __( 'Reviewer', 'gp-translator-signup' ),
+		'rejected'   => __( 'Blocked', 'gp-translator-signup' ),
 	);
+}
+
+/**
+ * Returns a user's translator status, or an empty string.
+ *
+ * @param int $user_id
+ * @return string
+ */
+function user_status( int $user_id ): string {
+	return (string) get_user_meta( $user_id, STATUS_META, true );
 }
 
 /**
@@ -106,7 +135,7 @@ function available_locales(): array {
 }
 
 /**
- * Returns a user's requested locale slugs.
+ * Returns a user's locale slugs.
  *
  * @param int $user_id
  * @return string[]
@@ -117,7 +146,7 @@ function user_languages( int $user_id ): array {
 }
 
 /**
- * Returns a user's requested languages as readable names.
+ * Returns a user's languages as readable names.
  *
  * @param int $user_id
  * @return string
@@ -140,6 +169,21 @@ function user_languages_label( int $user_id ): string {
 }
 
 /**
+ * Returns the name of the project a user signed up from, or an empty string.
+ *
+ * @param int $user_id
+ * @return string
+ */
+function user_applied_from_label( int $user_id ): string {
+	$path = (string) get_user_meta( $user_id, APPLIED_FROM_META, true );
+	if ( '' === $path ) {
+		return '';
+	}
+	$project = GP::$project->by_path( $path );
+	return $project ? $project->name : $path;
+}
+
+/**
  * Keeps only locale slugs that have a translation set.
  *
  * @param mixed $submitted Raw submitted value.
@@ -151,6 +195,51 @@ function sanitize_languages( $submitted ): array {
 	}
 	$submitted = array_map( 'sanitize_text_field', wp_unslash( $submitted ) );
 	return array_values( array_intersect( $submitted, array_keys( available_locales() ) ) );
+}
+
+/**
+ * Returns the path of an existing, active GlotPress project, or an empty string.
+ *
+ * @param mixed $path Raw project path.
+ * @return string
+ */
+function sanitize_project_path( $path ): string {
+	if ( ! is_string( $path ) || '' === $path ) {
+		return '';
+	}
+	$project = GP::$project->by_path( sanitize_text_field( wp_unslash( $path ) ) );
+	return $project && $project->active ? $project->path : '';
+}
+
+/**
+ * Reads the sign-up fields from the submitted form.
+ *
+ * @return array{role: string, languages: string[], other: string, experience: string, applied_from: string}
+ */
+function submitted_values(): array {
+	// phpcs:disable WordPress.Security.NonceVerification.Missing -- Callers verify the nonce where the form has one; core's registration form has none.
+	return array(
+		'role'         => isset( $_POST[ ROLE_FIELD ] ) && 'reviewer' === $_POST[ ROLE_FIELD ] ? 'reviewer' : 'translator',
+		'languages'    => sanitize_languages( $_POST[ LANGUAGES_META ] ?? array() ),
+		'other'        => sanitize_text_field( wp_unslash( $_POST[ OTHER_META ] ?? '' ) ),
+		'experience'   => sanitize_textarea_field( wp_unslash( $_POST[ EXPERIENCE_META ] ?? '' ) ),
+		'applied_from' => sanitize_project_path( $_POST[ APPLIED_FROM_META ] ?? '' ),
+	);
+	// phpcs:enable
+}
+
+/**
+ * Adds errors for sign-up fields that don't add up.
+ *
+ * @param WP_Error $errors
+ * @param array    $values See submitted_values().
+ * @return WP_Error
+ */
+function validate_values( WP_Error $errors, array $values ): WP_Error {
+	if ( 'reviewer' === $values['role'] && ! $values['languages'] ) {
+		$errors->add( 'gp_translator_languages', __( '<strong>Error:</strong> Choose the languages you want to review.', 'gp-translator-signup' ) );
+	}
+	return $errors;
 }
 
 /**
@@ -170,32 +259,63 @@ function render_language_checkboxes( array $checked ): void {
 	}
 }
 
-// -----------------------------------------------------------------------------
-// Registration form
-// -----------------------------------------------------------------------------
+/**
+ * Renders the role choice, languages and reviewer experience fields.
+ *
+ * @param array $values      See submitted_values().
+ * @param bool  $choose_role Whether to ask translator or reviewer. Without it, the fields are a reviewer application.
+ */
+function render_signup_fields( array $values, bool $choose_role = true ): void {
+	$is_reviewer = ! $choose_role || 'reviewer' === $values['role'];
+	?>
+	<?php if ( $choose_role ) : ?>
+		<fieldset class="gp-translator-role" style="margin-bottom:16px">
+			<legend><?php esc_html_e( 'I want to', 'gp-translator-signup' ); ?></legend>
+			<label style="display:block;margin-bottom:4px">
+				<input type="radio" name="<?php echo esc_attr( ROLE_FIELD ); ?>" value="translator" <?php checked( ! $is_reviewer ); ?>>
+				<?php esc_html_e( 'Translate: suggest translations. You can start straight away.', 'gp-translator-signup' ); ?>
+			</label>
+			<label style="display:block;margin-bottom:4px">
+				<input type="radio" name="<?php echo esc_attr( ROLE_FIELD ); ?>" value="reviewer" <?php checked( $is_reviewer ); ?>>
+				<?php esc_html_e( 'Review: approve translations in my languages. Reviewers are approved by the site admin.', 'gp-translator-signup' ); ?>
+			</label>
+		</fieldset>
+	<?php else : ?>
+		<input type="hidden" name="<?php echo esc_attr( ROLE_FIELD ); ?>" value="reviewer">
+	<?php endif; ?>
 
-add_action( 'register_form', __NAMESPACE__ . '\\render_registration_fields' );
-add_filter( 'registration_errors', __NAMESPACE__ . '\\check_honeypot' );
-// Before WordPress sends its notifications (priority 10), so the admin email can list the languages.
-add_action( 'register_new_user', __NAMESPACE__ . '\\save_registration', 5 );
+	<fieldset style="margin-bottom:16px">
+		<legend><?php esc_html_e( 'Languages you can translate', 'gp-translator-signup' ); ?></legend>
+		<?php render_language_checkboxes( $values['languages'] ); ?>
+	</fieldset>
+
+	<p>
+		<label for="<?php echo esc_attr( OTHER_META ); ?>"><?php esc_html_e( 'Other languages (optional)', 'gp-translator-signup' ); ?></label><br>
+		<input type="text" name="<?php echo esc_attr( OTHER_META ); ?>" id="<?php echo esc_attr( OTHER_META ); ?>" class="input" value="<?php echo esc_attr( $values['other'] ); ?>" size="25">
+	</p>
+
+	<p class="gp-translator-reviewer-fields"<?php echo $is_reviewer ? '' : ' hidden'; ?>>
+		<label for="<?php echo esc_attr( EXPERIENCE_META ); ?>"><?php esc_html_e( 'Tell us about your translation experience (optional). Links to your WordPress.org profile or past work help.', 'gp-translator-signup' ); ?></label><br>
+		<textarea name="<?php echo esc_attr( EXPERIENCE_META ); ?>" id="<?php echo esc_attr( EXPERIENCE_META ); ?>" rows="4" style="width:100%"><?php echo esc_textarea( $values['experience'] ); ?></textarea>
+	</p>
+
+	<?php if ( $choose_role ) : ?>
+		<script>
+		document.querySelectorAll( 'input[name="<?php echo esc_js( ROLE_FIELD ); ?>"]' ).forEach( function ( radio ) {
+			radio.addEventListener( 'change', function () {
+				radio.form.querySelector( '.gp-translator-reviewer-fields' ).hidden = 'reviewer' !== radio.value;
+			} );
+		} );
+		</script>
+	<?php endif; ?>
+	<?php
+}
 
 /**
- * Adds the language fields and the honeypot to wp-login.php?action=register.
+ * Renders the hidden spam-trap field.
  */
-function render_registration_fields(): void {
-	// phpcs:disable WordPress.Security.NonceVerification.Missing -- Refilling the form after a failed submission.
-	$checked = isset( $_POST[ LANGUAGES_META ] ) ? sanitize_languages( $_POST[ LANGUAGES_META ] ) : array();
-	$other   = isset( $_POST[ OTHER_META ] ) ? sanitize_text_field( wp_unslash( $_POST[ OTHER_META ] ) ) : '';
-	// phpcs:enable
+function render_honeypot(): void {
 	?>
-	<p style="margin-bottom:16px">
-		<?php esc_html_e( 'Languages you can translate', 'gp-translator-signup' ); ?><br>
-		<?php render_language_checkboxes( $checked ); ?>
-	</p>
-	<p>
-		<label for="<?php echo esc_attr( OTHER_META ); ?>"><?php esc_html_e( 'Other languages (optional)', 'gp-translator-signup' ); ?></label>
-		<input type="text" name="<?php echo esc_attr( OTHER_META ); ?>" id="<?php echo esc_attr( OTHER_META ); ?>" class="input" value="<?php echo esc_attr( $other ); ?>" size="25">
-	</p>
 	<p style="position:absolute;left:-9999px" aria-hidden="true">
 		<label for="<?php echo esc_attr( HONEYPOT ); ?>">Website</label>
 		<input type="text" name="<?php echo esc_attr( HONEYPOT ); ?>" id="<?php echo esc_attr( HONEYPOT ); ?>" value="" tabindex="-1" autocomplete="off">
@@ -203,51 +323,139 @@ function render_registration_fields(): void {
 	<?php
 }
 
+// -----------------------------------------------------------------------------
+// Registration (wp-login.php and the /join page)
+// -----------------------------------------------------------------------------
+
+add_action( 'register_form', __NAMESPACE__ . '\\render_registration_fields' );
+add_filter( 'registration_errors', __NAMESPACE__ . '\\check_registration' );
+// Before WordPress sends its notifications (priority 10), so the admin email can list the languages.
+add_action( 'register_new_user', __NAMESPACE__ . '\\save_registration', 5 );
+
 /**
- * Rejects registrations that filled in the honeypot.
- *
- * @param \WP_Error $errors
- * @return \WP_Error
+ * Adds the sign-up fields and the honeypot to wp-login.php?action=register.
  */
-function check_honeypot( \WP_Error $errors ): \WP_Error {
+function render_registration_fields(): void {
+	render_signup_fields( submitted_values() );
+	render_honeypot();
+}
+
+/**
+ * Rejects registrations that filled in the honeypot or are missing reviewer languages.
+ *
+ * Runs for wp-login.php and for the /join page, which registers through register_new_user().
+ *
+ * @param WP_Error $errors
+ * @return WP_Error
+ */
+function check_registration( WP_Error $errors ): WP_Error {
 	// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Core's registration form has no nonce.
 	if ( ! empty( $_POST[ HONEYPOT ] ) ) {
 		$errors->add( 'gp_translator_spam', __( '<strong>Error:</strong> Registration failed. Please try again.', 'gp-translator-signup' ) );
 	}
-	return $errors;
+	return validate_values( $errors, submitted_values() );
 }
 
 /**
- * Saves the languages and marks the new user as a pending translator.
+ * Saves the sign-up fields for a new user.
  *
  * @param int $user_id
  */
 function save_registration( int $user_id ): void {
-	// phpcs:disable WordPress.Security.NonceVerification.Missing -- Core's registration form has no nonce.
-	update_user_meta( $user_id, LANGUAGES_META, sanitize_languages( $_POST[ LANGUAGES_META ] ?? array() ) );
-	update_user_meta( $user_id, OTHER_META, sanitize_text_field( wp_unslash( $_POST[ OTHER_META ] ?? '' ) ) );
-	// phpcs:enable
-	update_user_meta( $user_id, STATUS_META, 'pending' );
+	save_signup( $user_id, submitted_values() );
 }
 
-add_filter( 'wp_new_user_notification_email_admin', __NAMESPACE__ . '\\add_languages_to_admin_email', 10, 2 );
+/**
+ * Saves sign-up fields and sets the status: translators are active, reviewers wait for approval.
+ *
+ * @param int   $user_id
+ * @param array $values See submitted_values().
+ */
+function save_signup( int $user_id, array $values ): void {
+	update_user_meta( $user_id, LANGUAGES_META, $values['languages'] );
+	update_user_meta( $user_id, OTHER_META, $values['other'] );
+
+	if ( 'reviewer' === $values['role'] ) {
+		update_user_meta( $user_id, EXPERIENCE_META, $values['experience'] );
+	}
+	if ( '' !== $values['applied_from'] ) {
+		update_user_meta( $user_id, APPLIED_FROM_META, $values['applied_from'] );
+	}
+
+	update_user_meta( $user_id, STATUS_META, 'reviewer' === $values['role'] ? 'pending' : 'translator' );
+}
 
 /**
- * Adds the languages and a review link to the "New user registration" email.
+ * Lets an existing translator apply to review, and tells the admin.
+ *
+ * @param int   $user_id
+ * @param array $values See submitted_values().
+ */
+function apply_to_review( int $user_id, array $values ): void {
+	save_signup( $user_id, array_merge( $values, array( 'role' => 'reviewer' ) ) );
+
+	$user = get_userdata( $user_id );
+	if ( ! $user ) {
+		return;
+	}
+
+	$blogname = wp_specialchars_decode( get_option( 'blogname' ), ENT_QUOTES );
+
+	wp_mail(
+		get_option( 'admin_email' ),
+		/* translators: %s: site name */
+		sprintf( __( '[%s] New reviewer application', 'gp-translator-signup' ), $blogname ),
+		/* translators: %s: username */
+		sprintf( __( '%s applied to review translations.', 'gp-translator-signup' ), $user->user_login ) . "\r\n\r\n" . application_summary( $user_id )
+	);
+}
+
+/**
+ * Describes a reviewer application for admin emails.
+ *
+ * @param int $user_id
+ * @return string
+ */
+function application_summary( int $user_id ): string {
+	/* translators: %s: languages */
+	$lines = array( sprintf( __( 'Languages: %s', 'gp-translator-signup' ), user_languages_label( $user_id ) ) );
+
+	$applied_from = user_applied_from_label( $user_id );
+	if ( '' !== $applied_from ) {
+		/* translators: %s: project name */
+		$lines[] = sprintf( __( 'Applied from: %s', 'gp-translator-signup' ), $applied_from );
+	}
+
+	$experience = (string) get_user_meta( $user_id, EXPERIENCE_META, true );
+	if ( '' !== $experience ) {
+		/* translators: %s: what the applicant wrote about their experience */
+		$lines[] = sprintf( __( "Experience:\r\n%s", 'gp-translator-signup' ), $experience );
+	}
+
+	/* translators: %s: URL of the pending reviewers list */
+	$lines[] = sprintf( __( 'Review pending reviewers: %s', 'gp-translator-signup' ), admin_url( 'users.php?' . STATUS_META . '=pending' ) );
+
+	return implode( "\r\n", $lines ) . "\r\n";
+}
+
+add_filter( 'wp_new_user_notification_email_admin', __NAMESPACE__ . '\\add_signup_to_admin_email', 10, 2 );
+
+/**
+ * Adds the languages, and for reviewers the application, to the "New user registration" email.
  *
  * @param array   $email
  * @param WP_User $user
  * @return array
  */
-function add_languages_to_admin_email( array $email, WP_User $user ): array {
-	if ( 'pending' !== get_user_meta( $user->ID, STATUS_META, true ) ) {
-		return $email;
-	}
+function add_signup_to_admin_email( array $email, WP_User $user ): array {
+	$status = user_status( $user->ID );
 
-	/* translators: %s: languages */
-	$email['message'] .= "\r\n" . sprintf( __( 'Languages: %s', 'gp-translator-signup' ), user_languages_label( $user->ID ) ) . "\r\n";
-	/* translators: %s: URL of the pending translators list */
-	$email['message'] .= sprintf( __( 'Review pending translators: %s', 'gp-translator-signup' ), admin_url( 'users.php?' . STATUS_META . '=pending' ) ) . "\r\n";
+	if ( 'pending' === $status ) {
+		$email['message'] .= "\r\n" . __( 'They applied to review translations.', 'gp-translator-signup' ) . "\r\n" . application_summary( $user->ID );
+	} elseif ( 'translator' === $status ) {
+		/* translators: %s: languages */
+		$email['message'] .= "\r\n" . sprintf( __( 'Signed up to translate: %s', 'gp-translator-signup' ), user_languages_label( $user->ID ) ) . "\r\n";
+	}
 
 	return $email;
 }
@@ -256,11 +464,11 @@ function add_languages_to_admin_email( array $email, WP_User $user ): array {
 // GlotPress permissions
 // -----------------------------------------------------------------------------
 
-// Before GlotPress's own pre-checks (priority 10), so a rejected translator is not let in by "everyone can translate".
+// Before GlotPress's own pre-checks (priority 10), so a blocked translator is not let in by "everyone can translate".
 add_filter( 'gp_pre_can_user', __NAMESPACE__ . '\\filter_permissions', 5, 2 );
 
 /**
- * Approved translators can approve in their languages on every project; rejected ones cannot suggest.
+ * Approved reviewers can approve in their languages on every project; blocked translators cannot suggest.
  *
  * @param string|bool $verdict
  * @param array       $args    See GP_Permission::user_can().
@@ -271,7 +479,7 @@ function filter_permissions( $verdict, array $args ) {
 		return $verdict;
 	}
 
-	$status = get_user_meta( $args['user']->ID, STATUS_META, true );
+	$status = user_status( $args['user']->ID );
 
 	if ( 'rejected' === $status && 'edit' === $args['action'] && 'translation-set' === $args['object_type'] ) {
 		return false;
@@ -301,8 +509,41 @@ function filter_permissions( $verdict, array $args ) {
 }
 
 // -----------------------------------------------------------------------------
-// GlotPress header link
+// GlotPress: /join page, header link and project banners
 // -----------------------------------------------------------------------------
+
+add_action( 'gp_init', __NAMESPACE__ . '\\register_join_route' );
+
+/**
+ * Adds the /join page to GlotPress.
+ */
+function register_join_route(): void {
+	require_once __DIR__ . '/includes/JoinRoute.php';
+
+	GP::$router->prepend( '/join', array( JoinRoute::class, 'join_get' ), 'get' );
+	GP::$router->prepend( '/join', array( JoinRoute::class, 'join_post' ), 'post' );
+}
+
+/**
+ * Returns the URL of the /join page.
+ *
+ * @param string $project_path Project to come back to.
+ * @param string $locale       Locale slug to pre-select.
+ * @param array  $extra        More query args.
+ * @return string
+ */
+function join_url( string $project_path = '', string $locale = '', array $extra = array() ): string {
+	$args = array_filter(
+		array_merge(
+			array(
+				'project' => $project_path,
+				'locale'  => $locale,
+			),
+			$extra
+		)
+	);
+	return gp_url( '/join', $args ?: null );
+}
 
 add_filter( 'gp_nav_menu_items', __NAMESPACE__ . '\\add_signup_link', 10, 2 );
 
@@ -315,9 +556,94 @@ add_filter( 'gp_nav_menu_items', __NAMESPACE__ . '\\add_signup_link', 10, 2 );
  */
 function add_signup_link( array $items, string $location ): array {
 	if ( 'side' === $location && ! is_user_logged_in() && get_option( 'users_can_register' ) ) {
-		$items[ esc_url( wp_registration_url() ) ] = __( 'Sign up to translate', 'gp-translator-signup' );
+		$items[ esc_url( join_url() ) ] = __( 'Sign up to translate', 'gp-translator-signup' );
 	}
 	return $items;
+}
+
+add_action( 'gp_pre_tmpl_load', __NAMESPACE__ . '\\remember_page_context', 10, 2 );
+add_action( 'gp_after_notices', __NAMESPACE__ . '\\render_banner' );
+
+/**
+ * Stores or returns the project and translation set of the page being shown.
+ *
+ * @param array|null $context New context.
+ * @return array{project?: \GP_Project, set?: \GP_Translation_Set, locale?: \GP_Locale}
+ */
+function page_context( ?array $context = null ): array {
+	static $current = array();
+	if ( null !== $context ) {
+		$current = $context;
+	}
+	return $current;
+}
+
+/**
+ * Remembers the project (and translation set) when a project or translations page loads.
+ *
+ * The page template loads the header, so this runs before gp_after_notices.
+ *
+ * @param string $template
+ * @param array  $args
+ */
+function remember_page_context( string $template, array $args ): void {
+	if ( ! in_array( $template, array( 'project', 'translations' ), true ) || empty( $args['project'] ) ) {
+		return;
+	}
+	page_context(
+		array(
+			'project' => $args['project'],
+			'set'     => $args['translation_set'] ?? null,
+			'locale'  => $args['locale'] ?? null,
+		)
+	);
+}
+
+/**
+ * Invites visitors to sign up, and translators to apply to review, on project and translation pages.
+ */
+function render_banner(): void {
+	$context = page_context();
+	if ( empty( $context['project'] ) ) {
+		return;
+	}
+
+	$project = $context['project'];
+	$set     = $context['set'] ?? null;
+	$locale  = $set && isset( available_locales()[ $set->locale ] ) ? $set->locale : '';
+	$name    = $context['locale']->english_name ?? '';
+
+	if ( ! is_user_logged_in() ) {
+		if ( ! get_option( 'users_can_register' ) ) {
+			return;
+		}
+		$message = $name
+			/* translators: 1: language, 2: project name */
+			? sprintf( __( 'Speak %1$s? Help translate %2$s.', 'gp-translator-signup' ), $name, $project->name )
+			/* translators: %s: project name */
+			: sprintf( __( 'Help translate %s.', 'gp-translator-signup' ), $project->name );
+		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $project->path, $locale ) ), esc_html__( 'Sign up as a translator or reviewer', 'gp-translator-signup' ) );
+	} else {
+		$status = user_status( get_current_user_id() );
+
+		// On a translations page, anyone who can't approve there is invited; elsewhere only sign-up translators are.
+		if ( $set ) {
+			if ( ! in_array( $status, array( '', 'translator' ), true ) || GP::$permission->current_user_can( 'approve', 'translation-set', $set->id ) ) {
+				return;
+			}
+		} elseif ( 'translator' !== $status ) {
+			return;
+		}
+
+		$message = $name
+			/* translators: 1: language, 2: project name */
+			? sprintf( __( 'Want to approve %1$s translations for %2$s?', 'gp-translator-signup' ), $name, $project->name )
+			/* translators: %s: project name */
+			: sprintf( __( 'Want to approve translations for %s?', 'gp-translator-signup' ), $project->name );
+		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $project->path, $locale ) ), esc_html__( 'Apply to review', 'gp-translator-signup' ) );
+	}
+
+	printf( '<div class="notice gp-translator-signup-banner">%s %s</div>', esc_html( $message ), $link ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $link is escaped above.
 }
 
 // -----------------------------------------------------------------------------
@@ -351,30 +677,66 @@ function render_users_column( $output, string $column, int $user_id ) {
 	if ( 'gp_translator' !== $column ) {
 		return $output;
 	}
-	$status = get_user_meta( $user_id, STATUS_META, true );
+	$status = user_status( $user_id );
 	if ( ! $status ) {
 		return '&mdash;';
 	}
-	return sprintf( '<strong>%s</strong><br>%s', esc_html( statuses()[ $status ] ?? $status ), esc_html( user_languages_label( $user_id ) ) );
+
+	$output = sprintf( '<strong>%s</strong><br>%s', esc_html( statuses()[ $status ] ?? $status ), esc_html( user_languages_label( $user_id ) ) );
+
+	if ( 'pending' === $status ) {
+		$applied_from = user_applied_from_label( $user_id );
+		if ( '' !== $applied_from ) {
+			/* translators: %s: project name */
+			$output .= '<br>' . esc_html( sprintf( __( 'Applied from: %s', 'gp-translator-signup' ), $applied_from ) );
+		}
+		$experience = (string) get_user_meta( $user_id, EXPERIENCE_META, true );
+		if ( '' !== $experience ) {
+			$output .= '<br><em>' . esc_html( wp_trim_words( $experience, 25 ) ) . '</em>';
+		}
+	}
+
+	return $output;
 }
 
 /**
- * Adds Approve / Reject links under translators in the users list.
+ * Returns the status changes offered for a status, as new status => link label.
+ *
+ * @param string $status
+ * @return array<string, string>
+ */
+function status_actions( string $status ): array {
+	$block = array( 'rejected' => __( 'Block', 'gp-translator-signup' ) );
+
+	switch ( $status ) {
+		case 'pending':
+			return array(
+				'approved'   => __( 'Approve as reviewer', 'gp-translator-signup' ),
+				'translator' => __( 'Decline', 'gp-translator-signup' ),
+			) + $block;
+		case 'approved':
+			return array( 'translator' => __( 'Remove reviewer', 'gp-translator-signup' ) ) + $block;
+		case 'rejected':
+			return array( 'translator' => __( 'Unblock', 'gp-translator-signup' ) );
+		default:
+			return array( 'approved' => __( 'Make reviewer', 'gp-translator-signup' ) ) + $block;
+	}
+}
+
+/**
+ * Adds status links (approve, decline, block, ...) under translators in the users list.
  *
  * @param array   $actions
  * @param WP_User $user
  * @return array
  */
 function add_row_actions( array $actions, WP_User $user ): array {
-	$status = get_user_meta( $user->ID, STATUS_META, true );
+	$status = user_status( $user->ID );
 	if ( ! $status || ! current_user_can( 'promote_user', $user->ID ) ) {
 		return $actions;
 	}
 
-	foreach ( array( 'approved' => __( 'Approve', 'gp-translator-signup' ), 'rejected' => __( 'Reject', 'gp-translator-signup' ) ) as $new_status => $label ) {
-		if ( $new_status === $status ) {
-			continue;
-		}
+	foreach ( status_actions( $status ) as $new_status => $label ) {
 		$url = wp_nonce_url(
 			admin_url( 'admin-post.php?action=gp_translator_status&user_id=' . $user->ID . '&status=' . $new_status ),
 			'gp_translator_status_' . $user->ID
@@ -386,7 +748,7 @@ function add_row_actions( array $actions, WP_User $user ): array {
 }
 
 /**
- * Adds a "Pending translators" view above the users list.
+ * Adds a "Pending reviewers" view above the users list.
  *
  * @param array $views
  * @return array
@@ -409,7 +771,7 @@ function add_pending_view( array $views ): array {
 		'<a href="%s"%s>%s <span class="count">(%d)</span></a>',
 		esc_url( admin_url( 'users.php?' . STATUS_META . '=pending' ) ),
 		$current ? ' class="current" aria-current="page"' : '',
-		esc_html__( 'Pending translators', 'gp-translator-signup' ),
+		esc_html__( 'Pending reviewers', 'gp-translator-signup' ),
 		$count
 	);
 
@@ -436,7 +798,7 @@ function filter_users_by_status( WP_User_Query $query ): void {
 }
 
 /**
- * Handles the Approve / Reject links.
+ * Handles the status links.
  */
 function handle_status_change(): void {
 	$user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
@@ -455,26 +817,29 @@ function handle_status_change(): void {
 }
 
 /**
- * Shows a notice after Approve / Reject.
+ * Shows a notice after a status link.
  */
 function render_admin_notices(): void {
 	// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Display only.
-	$status = isset( $_GET['gp_translator_updated'] ) ? sanitize_key( $_GET['gp_translator_updated'] ) : '';
-	if ( 'approved' === $status ) {
-		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Translator approved. They can now review translations in their languages.', 'gp-translator-signup' ) . '</p></div>';
-	} elseif ( 'rejected' === $status ) {
-		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Translator rejected. They can no longer suggest translations.', 'gp-translator-signup' ) . '</p></div>';
+	$status   = isset( $_GET['gp_translator_updated'] ) ? sanitize_key( $_GET['gp_translator_updated'] ) : '';
+	$messages = array(
+		'approved'   => __( 'Reviewer approved. They can now approve translations in their languages.', 'gp-translator-signup' ),
+		'translator' => __( 'Done. They can suggest translations, but not approve them.', 'gp-translator-signup' ),
+		'rejected'   => __( 'Translator blocked. They can no longer suggest translations.', 'gp-translator-signup' ),
+	);
+	if ( isset( $messages[ $status ] ) ) {
+		echo '<div class="notice notice-success is-dismissible"><p>' . esc_html( $messages[ $status ] ) . '</p></div>';
 	}
 }
 
 /**
- * Changes a translator's status, and emails them when they are approved.
+ * Changes a translator's status, and emails them when they become a reviewer.
  *
  * @param int    $user_id
  * @param string $status
  */
 function set_status( int $user_id, string $status ): void {
-	$previous = get_user_meta( $user_id, STATUS_META, true );
+	$previous = user_status( $user_id );
 	update_user_meta( $user_id, STATUS_META, $status );
 
 	if ( 'approved' !== $status || 'approved' === $previous ) {
@@ -516,7 +881,9 @@ function render_profile_fields( WP_User $user ): void {
 	if ( ! current_user_can( 'promote_user', $user->ID ) ) {
 		return;
 	}
-	$status = get_user_meta( $user->ID, STATUS_META, true );
+	$status       = user_status( $user->ID );
+	$experience   = (string) get_user_meta( $user->ID, EXPERIENCE_META, true );
+	$applied_from = user_applied_from_label( $user->ID );
 	?>
 	<h2><?php esc_html_e( 'Translator', 'gp-translator-signup' ); ?></h2>
 	<table class="form-table" role="presentation">
@@ -529,7 +896,7 @@ function render_profile_fields( WP_User $user ): void {
 						<option value="<?php echo esc_attr( $value ); ?>" <?php selected( $status, $value ); ?>><?php echo esc_html( $label ); ?></option>
 					<?php endforeach; ?>
 				</select>
-				<p class="description"><?php esc_html_e( 'Approved translators can approve translations in their languages on every project. Rejected translators cannot suggest translations.', 'gp-translator-signup' ); ?></p>
+				<p class="description"><?php esc_html_e( 'Translators can suggest translations. Reviewers can also approve translations in their languages on every project. Blocked translators cannot suggest translations.', 'gp-translator-signup' ); ?></p>
 			</td>
 		</tr>
 		<tr>
@@ -544,6 +911,18 @@ function render_profile_fields( WP_User $user ): void {
 				<?php endif; ?>
 			</td>
 		</tr>
+		<?php if ( '' !== $applied_from ) : ?>
+			<tr>
+				<th><?php esc_html_e( 'Signed up from', 'gp-translator-signup' ); ?></th>
+				<td><?php echo esc_html( $applied_from ); ?></td>
+			</tr>
+		<?php endif; ?>
+		<?php if ( '' !== $experience ) : ?>
+			<tr>
+				<th><?php esc_html_e( 'Translation experience', 'gp-translator-signup' ); ?></th>
+				<td><?php echo wp_kses_post( wpautop( make_clickable( esc_html( $experience ) ) ) ); ?></td>
+			</tr>
+		<?php endif; ?>
 	</table>
 	<?php
 }

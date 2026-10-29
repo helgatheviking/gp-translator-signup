@@ -1,6 +1,6 @@
 {
   "name": "helgatheviking/gp-translator-signup",
-  "description": "Lets translators register for GlotPress with the languages they can translate, and lets admins approve them as reviewers.",
+  "description": "Lets visitors sign up for GlotPress as translators or reviewers, and lets admins approve reviewers.",
   "type": "wordpress-plugin",
   "license": "GPL-3.0-or-later",
   "require": {

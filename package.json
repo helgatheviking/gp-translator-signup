@@ -1,7 +1,7 @@
 {
   "name": "gp-translator-signup",
   "version": "0.1.0",
-  "description": "Lets translators register for GlotPress with the languages they can translate, and lets admins approve them as reviewers.",
+  "description": "Lets visitors sign up for GlotPress as translators or reviewers, and lets admins approve reviewers.",
   "main": "gp-translator-signup.php",
   "scripts": {
     "make-pot": "composer makepot",
@@ -15,6 +15,8 @@
   },
   "files": [
     "gp-translator-signup.php",
+    "includes/",
+    "templates/",
     "languages/",
     "README.md",
     "vendor/",
