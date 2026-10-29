@@ -568,7 +568,7 @@ add_action( 'gp_after_notices', __NAMESPACE__ . '\\render_banner' );
  * Stores or returns the project and translation set of the page being shown.
  *
  * @param array|null $context New context.
- * @return array{project?: \GP_Project, set?: \GP_Translation_Set, locale?: \GP_Locale}
+ * @return array{project?: \GP_Project|null, set?: \GP_Translation_Set|null, locale?: \GP_Locale|null}
  */
 function page_context( ?array $context = null ): array {
 	static $current = array();
@@ -579,7 +579,7 @@ function page_context( ?array $context = null ): array {
 }
 
 /**
- * Remembers the project (and translation set) when a project or translations page loads.
+ * Remembers the page when the projects list, a project or a translations page loads.
  *
  * The page template loads the header, so this runs before gp_after_notices.
  *
@@ -587,6 +587,10 @@ function page_context( ?array $context = null ): array {
  * @param array  $args
  */
 function remember_page_context( string $template, array $args ): void {
+	if ( 'projects' === $template ) {
+		page_context( array( 'project' => null ) );
+		return;
+	}
 	if ( ! in_array( $template, array( 'project', 'translations' ), true ) || empty( $args['project'] ) ) {
 		return;
 	}
@@ -602,15 +606,16 @@ function remember_page_context( string $template, array $args ): void {
 }
 
 /**
- * Invites visitors to sign up, and translators to apply to review, on project and translation pages.
+ * Invites visitors to sign up, and translators to apply to review, on the projects list, project and translation pages.
  */
 function render_banner(): void {
 	$context = page_context();
-	if ( empty( $context['project'] ) ) {
+	if ( ! array_key_exists( 'project', $context ) ) {
 		return;
 	}
 
 	$project = $context['project'];
+	$path    = $project ? $project->path : '';
 	$set     = $context['set'] ?? null;
 	$locale  = $set && isset( available_locales()[ $set->locale ] ) ? $set->locale : '';
 	$name    = $context['locale']->english_name ?? '';
@@ -619,12 +624,16 @@ function render_banner(): void {
 		if ( ! get_option( 'users_can_register' ) ) {
 			return;
 		}
-		$message = $name
+		if ( ! $project ) {
+			$message = __( 'Help translate these projects into your language.', 'gp-translator-signup' );
+		} elseif ( $name ) {
 			/* translators: 1: language, 2: project name */
-			? sprintf( __( 'Speak %1$s? Help translate %2$s.', 'gp-translator-signup' ), $name, $project->name )
+			$message = sprintf( __( 'Speak %1$s? Help translate %2$s.', 'gp-translator-signup' ), $name, $project->name );
+		} else {
 			/* translators: %s: project name */
-			: sprintf( __( 'Help translate %s.', 'gp-translator-signup' ), $project->name );
-		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $project->path, $locale ) ), esc_html__( 'Sign up as a translator or reviewer', 'gp-translator-signup' ) );
+			$message = sprintf( __( 'Help translate %s.', 'gp-translator-signup' ), $project->name );
+		}
+		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $path, $locale ) ), esc_html__( 'Sign up as a translator or reviewer', 'gp-translator-signup' ) );
 	} else {
 		$status = user_status( get_current_user_id() );
 
@@ -637,12 +646,16 @@ function render_banner(): void {
 			return;
 		}
 
-		$message = $name
+		if ( ! $project ) {
+			$message = __( 'Want to approve translations in your languages?', 'gp-translator-signup' );
+		} elseif ( $name ) {
 			/* translators: 1: language, 2: project name */
-			? sprintf( __( 'Want to approve %1$s translations for %2$s?', 'gp-translator-signup' ), $name, $project->name )
+			$message = sprintf( __( 'Want to approve %1$s translations for %2$s?', 'gp-translator-signup' ), $name, $project->name );
+		} else {
 			/* translators: %s: project name */
-			: sprintf( __( 'Want to approve translations for %s?', 'gp-translator-signup' ), $project->name );
-		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $project->path, $locale ) ), esc_html__( 'Apply to review', 'gp-translator-signup' ) );
+			$message = sprintf( __( 'Want to approve translations for %s?', 'gp-translator-signup' ), $project->name );
+		}
+		$link = sprintf( '<a href="%s">%s</a>', esc_url( join_url( $path, $locale ) ), esc_html__( 'Apply to review', 'gp-translator-signup' ) );
 	}
 
 	printf( '<div class="notice gp-translator-signup-banner">%s %s</div>', esc_html( $message ), $link ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- $link is escaped above.
