@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Translator Sign-up for GlotPress
  * Description: Lets visitors sign up for GlotPress as translators or reviewers, with the languages they can translate. Translators can suggest translations straight away; reviewers can approve translations in their languages once an admin approves them.
- * Version:     0.1.0
+ * Version:     0.2.0
  * Author:      helgatheviking
  * Author URI:  https://www.kathyisawesome.com
  * License:     GPL-3.0-or-later
