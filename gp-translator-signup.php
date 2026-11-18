@@ -50,7 +50,9 @@ use WP_User_Query;
 const LANGUAGES_META = 'gp_translator_languages';
 
 /**
- * User meta: languages they asked for that have no translation set yet.
+ * User meta: GlotPress locale slug of a language they asked us to add, one with no translation set yet.
+ *
+ * Older sign-ups hold free text instead.
  */
 const OTHER_META = 'gp_translator_other_languages';
 
@@ -124,14 +126,58 @@ function available_locales(): array {
 	foreach ( $slugs as $slug ) {
 		$locale = GP_Locales::by_slug( $slug );
 		if ( $locale ) {
-			$locales[ $slug ] = $locale->english_name === $locale->native_name
-				? $locale->english_name
-				: sprintf( '%s (%s)', $locale->english_name, $locale->native_name );
+			$locales[ $slug ] = locale_name( $locale );
 		}
 	}
 
 	asort( $locales );
 	return $locales;
+}
+
+/**
+ * Returns the GlotPress locales that have no translation set yet, keyed by locale slug.
+ *
+ * @return array<string, string> Locale slug => "English name (native name)".
+ */
+function requestable_locales(): array {
+	if ( ! class_exists( 'GP_Locales' ) ) {
+		return array();
+	}
+
+	$locales = array();
+	foreach ( GP_Locales::locales() as $slug => $locale ) {
+		$locales[ $slug ] = locale_name( $locale );
+	}
+
+	$locales = array_diff_key( $locales, available_locales() );
+	asort( $locales );
+	return $locales;
+}
+
+/**
+ * Returns a locale's English name, followed by its native name when that differs.
+ *
+ * @param \GP_Locale $locale
+ * @return string
+ */
+function locale_name( \GP_Locale $locale ): string {
+	return $locale->english_name === $locale->native_name
+		? $locale->english_name
+		: sprintf( '%s (%s)', $locale->english_name, $locale->native_name );
+}
+
+/**
+ * Returns the language a user asked us to add, as a readable name, or an empty string.
+ *
+ * @param int $user_id
+ * @return string
+ */
+function user_requested_language_label( int $user_id ): string {
+	$requested = (string) get_user_meta( $user_id, OTHER_META, true );
+	$locale    = '' !== $requested && class_exists( 'GP_Locales' ) ? GP_Locales::by_slug( $requested ) : null;
+
+	// Older sign-ups typed the language in.
+	return $locale ? sprintf( '%s [%s]', locale_name( $locale ), $locale->slug ) : $requested;
 }
 
 /**
@@ -159,10 +205,10 @@ function user_languages_label( int $user_id ): string {
 		$names[] = $locales[ $slug ] ?? $slug;
 	}
 
-	$other = (string) get_user_meta( $user_id, OTHER_META, true );
-	if ( '' !== $other ) {
-		/* translators: %s: languages typed in by the translator */
-		$names[] = sprintf( __( 'Other: %s', 'gp-translator-signup' ), $other );
+	$requested = user_requested_language_label( $user_id );
+	if ( '' !== $requested ) {
+		/* translators: %s: language the translator asked us to add */
+		$names[] = sprintf( __( 'Requested: %s', 'gp-translator-signup' ), $requested );
 	}
 
 	return $names ? implode( ', ', $names ) : __( 'None given', 'gp-translator-signup' );
@@ -198,6 +244,20 @@ function sanitize_languages( $submitted ): array {
 }
 
 /**
+ * Keeps a requested locale slug only if it is a GlotPress locale with no translation set yet.
+ *
+ * @param mixed $submitted Raw submitted value.
+ * @return string
+ */
+function sanitize_requested_language( $submitted ): string {
+	if ( ! is_string( $submitted ) ) {
+		return '';
+	}
+	$slug = sanitize_text_field( wp_unslash( $submitted ) );
+	return isset( requestable_locales()[ $slug ] ) ? $slug : '';
+}
+
+/**
  * Returns the path of an existing, active GlotPress project, or an empty string.
  *
  * @param mixed $path Raw project path.
@@ -221,7 +281,7 @@ function submitted_values(): array {
 	return array(
 		'role'         => isset( $_POST[ ROLE_FIELD ] ) && 'reviewer' === $_POST[ ROLE_FIELD ] ? 'reviewer' : 'translator',
 		'languages'    => sanitize_languages( $_POST[ LANGUAGES_META ] ?? array() ),
-		'other'        => sanitize_text_field( wp_unslash( $_POST[ OTHER_META ] ?? '' ) ),
+		'other'        => sanitize_requested_language( $_POST[ OTHER_META ] ?? '' ),
 		'experience'   => sanitize_textarea_field( wp_unslash( $_POST[ EXPERIENCE_META ] ?? '' ) ),
 		'applied_from' => sanitize_project_path( $_POST[ APPLIED_FROM_META ] ?? '' ),
 	);
@@ -236,7 +296,7 @@ function submitted_values(): array {
  * @return WP_Error
  */
 function validate_values( WP_Error $errors, array $values ): WP_Error {
-	if ( 'reviewer' === $values['role'] && ! $values['languages'] ) {
+	if ( 'reviewer' === $values['role'] && ! $values['languages'] && '' === $values['other'] ) {
 		$errors->add( 'gp_translator_languages', __( '<strong>Error:</strong> Choose the languages you want to review.', 'gp-translator-signup' ) );
 	}
 	return $errors;
@@ -289,10 +349,19 @@ function render_signup_fields( array $values, bool $choose_role = true ): void {
 		<?php render_language_checkboxes( $values['languages'] ); ?>
 	</fieldset>
 
-	<p>
-		<label for="<?php echo esc_attr( OTHER_META ); ?>"><?php esc_html_e( 'Other languages (optional)', 'gp-translator-signup' ); ?></label><br>
-		<input type="text" name="<?php echo esc_attr( OTHER_META ); ?>" id="<?php echo esc_attr( OTHER_META ); ?>" class="input" value="<?php echo esc_attr( $values['other'] ); ?>" size="25">
-	</p>
+	<?php $requestable = requestable_locales(); ?>
+	<?php if ( $requestable ) : ?>
+		<p>
+			<label for="<?php echo esc_attr( OTHER_META ); ?>"><?php esc_html_e( 'Don’t see your language? Request it (optional)', 'gp-translator-signup' ); ?></label><br>
+			<select name="<?php echo esc_attr( OTHER_META ); ?>" id="<?php echo esc_attr( OTHER_META ); ?>">
+				<option value=""><?php esc_html_e( 'Choose a language', 'gp-translator-signup' ); ?></option>
+				<?php foreach ( $requestable as $slug => $name ) : ?>
+					<option value="<?php echo esc_attr( $slug ); ?>" <?php selected( $values['other'], $slug ); ?>><?php echo esc_html( $name ); ?></option>
+				<?php endforeach; ?>
+			</select><br>
+			<small><?php esc_html_e( 'The site admin adds new languages. We’ll start it once there’s someone to translate it.', 'gp-translator-signup' ); ?></small>
+		</p>
+	<?php endif; ?>
 
 	<p class="gp-translator-reviewer-fields"<?php echo $is_reviewer ? '' : ' hidden'; ?>>
 		<label for="<?php echo esc_attr( EXPERIENCE_META ); ?>"><?php esc_html_e( 'Tell us about your translation experience (optional). Links to your WordPress.org profile or past work help.', 'gp-translator-signup' ); ?></label><br>
@@ -919,10 +988,10 @@ function render_profile_fields( WP_User $user ): void {
 			<td>
 				<?php render_language_checkboxes( user_languages( $user->ID ) ); ?>
 				<input type="hidden" name="<?php echo esc_attr( LANGUAGES_META ); ?>_present" value="1">
-				<?php $other = (string) get_user_meta( $user->ID, OTHER_META, true ); ?>
-				<?php if ( '' !== $other ) : ?>
-					<?php /* translators: %s: languages typed in by the translator */ ?>
-					<p class="description"><?php echo esc_html( sprintf( __( 'Also asked for: %s', 'gp-translator-signup' ), $other ) ); ?></p>
+				<?php $requested = user_requested_language_label( $user->ID ); ?>
+				<?php if ( '' !== $requested ) : ?>
+					<?php /* translators: %s: language the translator asked us to add */ ?>
+					<p class="description"><?php echo esc_html( sprintf( __( 'Asked us to add: %s', 'gp-translator-signup' ), $requested ) ); ?></p>
 				<?php endif; ?>
 			</td>
 		</tr>
